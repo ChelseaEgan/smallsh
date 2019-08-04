@@ -6,25 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "foregroundProcesses.h"
+#include "signals.h"
+#include "backgroundProcesses.h"
 
 #define MAX_ARGUMENTS 512
 #define MAX_INPUT_LENGTH 2048
-
-int exitStatus = -5;
-int exitSignal = -5;
-int tstpStatus = 0;
-int runningProcess = 0;
-bool runInBackground = false;
-
-struct backgroundProcesses {
-    pid_t* pids;
-    int arraySize;
-    int numPIDs;
-};
-struct backgroundProcesses bckgrdPIDs;
 
 // https://stackoverflow.com/a/4014981
 enum Commands {DEFAULT = -1, EXIT = 1, CD, STATUS, COMMENT};
@@ -47,120 +36,6 @@ int keyFromString(char* key) {
     }
 
     return DEFAULT;
-}
-
-// https://stackoverflow.com/a/3536261
-void initProccessesArray() {
-    bckgrdPIDs.pids = (pid_t *)malloc(5 * sizeof(pid_t));
-    bckgrdPIDs.numPIDs = 0;
-    bckgrdPIDs.arraySize = 5;
-}
-
-void addToProcesses(int pid) {
-    // Resize processes array if full
-    if (bckgrdPIDs.arraySize == bckgrdPIDs.numPIDs) {
-        bckgrdPIDs.arraySize *= 2;
-        bckgrdPIDs.pids = (pid_t *)realloc(bckgrdPIDs.pids, bckgrdPIDs.arraySize * sizeof(pid_t));
-    }
-
-    // Update the size and add the pid
-    bckgrdPIDs.pids[bckgrdPIDs.numPIDs++] = pid;
-}
-
-void removeFromProcesses(int pid) {
-    int pidIndex = -5,
-        i = 0;
-
-    while (pidIndex == -5 && i < bckgrdPIDs.numPIDs) {
-        if (bckgrdPIDs.pids[i] == pid) {
-            pidIndex = i;
-        }
-    }
-
-    if (pidIndex != -5) {
-        for (i = pidIndex; i < bckgrdPIDs.numPIDs; i++) {
-            bckgrdPIDs.pids[i] = bckgrdPIDs.pids[i + 1];
-        }
-
-        bckgrdPIDs.numPIDs--;
-    }
-}
-
-bool checkIfBackgroundProcess(int pid) {
-    int i;
-    for (i = 0; i < bckgrdPIDs.numPIDs; i++) {
-        if (bckgrdPIDs.pids[i] == pid) {
-            return true;
-        }
-    }
-    return false;
-}
-
-void setExitStatus(int exitMethod) {
-    fflush(stdout);
-    if (WIFEXITED(exitMethod)) {
-        exitStatus = WEXITSTATUS(exitMethod);
-        if (exitStatus > 1) exitStatus = 1;
-        exitSignal = -5;
-    } else if (WIFSIGNALED(exitMethod) && WTERMSIG(exitMethod) < 32) {
-        exitSignal = WTERMSIG(exitMethod);
-        exitStatus = -5;
-    }
-}
-
-void printStatus() {
-    if (exitStatus != -5) {
-        printf("exit value %d\n", exitStatus);
-    } else if (exitSignal != -5) {
-        printf("\nterminated by signal %d\n", exitSignal);
-    } else {
-        printf("exit value 0\n");
-    }
-    fflush(stdout);
-}
-
-// http://web.engr.oregonstate.edu/~brewsteb/CS344Slides/3.3%20Signals.pdf
-void catchSIGINT(int signo) {
-    if (runningProcess > 0) {
-        setExitStatus(signo);
-        printStatus();
-    }
-    printf("\n");
-    fflush(stdout);
-}
-
-void catchSIGTSTP() {
-    if (tstpStatus == 0) {
-        printf("\nEntering foreground-only mode (& is now ignored)\n");
-        tstpStatus = 1;
-    } else {
-        printf("\nExiting foreground-only mode\n");
-        tstpStatus = 0;
-    }
-}
-
-// http://www.microhowto.info/howto/reap_zombie_processes_using_a_sigchld_handler.html
-void checkForEndedProcesses() {
-    int childExitMethod, status;
-    pid_t pid = -5;
-
-    while ((pid = waitpid((pid_t)(-1), &childExitMethod, WNOHANG)) > 0) {
-        if (checkIfBackgroundProcess(pid)) {
-            printf("\nbackground pid %d is done: ", pid);
-            if (WIFEXITED(childExitMethod)) {
-                status = WEXITSTATUS(childExitMethod);
-                if (status > 1) status = 1;
-                printf("exit value %d\n", status);
-            } else if (WIFSIGNALED(childExitMethod)) {
-                status = WTERMSIG(childExitMethod);
-                printf("terminated by signal %d\n", status);
-            } else {
-                printf("Failed to get exit status\n");
-            }
-            fflush(stdout);
-            removeFromProcesses(pid);
-        }
-    }
 }
 
 // https://www.linuxquestions.org/questions/programming-9/replace-a-substring-with-another-string-in-c-170076/
@@ -301,18 +176,6 @@ int checkForRedirect(char* arg) {
     return -1;
 }
 
-void checkIfRunInBackground(char** args, int* numArgs) {
-    if (strcmp(args[*numArgs - 1], "&") == 0) {
-//        printf("TSTPSTATUS: %d\n", tstpStatus);
-        runInBackground = tstpStatus == 0 ? true : false;
-//        printf("RUNINBACKGROUND: %d\n", runInBackground);
-        args[*numArgs - 1] = '\0';
-        *numArgs -= 1;
-    } else {
-        runInBackground = false;
-    }
-}
-
 int handleRedirect(char** args, int numArgs) {
     bool inRedirectIsSet = false,
         outRedirectIsSet = false;
@@ -393,8 +256,7 @@ int handleRedirect(char** args, int numArgs) {
 // https://stackoverflow.com/questions/25261/set-and-oldset-in-sigprocmask
 void createChild(char** args, int numArgs) {
     pid_t spawnpid = -5;
-    int result = -5,
-        childExitMethod = -5;
+    int result = -5;
 
 
     sigset_t x;
@@ -425,14 +287,9 @@ void createChild(char** args, int numArgs) {
             break;
         default:
             if (runInBackground) {
-                addToProcesses(spawnpid);
-                printf("background pid is %d\n", spawnpid);
-                fflush(stdout);
+                handleBackgroundChild(spawnpid);
             } else {
-                runningProcess = spawnpid;
-                waitpid(spawnpid, &childExitMethod, 0);
-                runningProcess = 0;
-                setExitStatus(childExitMethod);
+                handleForegroundChild(spawnpid);
             }
             sigprocmask(SIG_UNBLOCK, &x, NULL);
             break;
@@ -455,6 +312,8 @@ int main() {
     int numArgs = 0;
     char** splitInput;
 
+    initForegroundVars();
+    initTstpStatus();
     initProccessesArray();
 
     // https://www.geeksforgeeks.org/atexit-function-in-c-c/
@@ -464,18 +323,7 @@ int main() {
         exit(1);
     }
 
-    // http://web.engr.oregonstate.edu/~brewsteb/CS344Slides/3.3%20Signals.pdf
-    struct sigaction SIGINT_action = {0};
-    SIGINT_action.sa_handler = catchSIGINT;
-    sigfillset(&SIGINT_action.sa_mask);
-    SIGINT_action.sa_flags = 0;
-    sigaction(SIGINT, &SIGINT_action, NULL);
-
-    struct sigaction SIGTSTP_action = {0};
-    SIGTSTP_action.sa_handler = catchSIGTSTP;
-    sigfillset(&SIGTSTP_action.sa_mask);
-    SIGTSTP_action.sa_flags = 0;
-    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+    createSignalHandlers();
 
     char* userInput;
 
