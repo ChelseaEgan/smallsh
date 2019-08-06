@@ -1,6 +1,10 @@
-//
-// Created by Chelsea on 8/4/2019.
-//
+/*
+ * CLASS: CS 344-400
+ * ASSIGNMENT: Program 3
+ * FILE NAME: foregroundProcesses.h
+ * DESCRIPTION: Header file for foregroundProcesses.c
+ * AUTHOR: Chelsea Egan (eganch@oregonstate.edu)
+ */
 
 #ifndef PROGRAM3_FOREGROUNDPROCESSES_H
 #define PROGRAM3_FOREGROUNDPROCESSES_H
